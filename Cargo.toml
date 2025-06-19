@@ -1,0 +1,17 @@
+[package]
+name = "serini"
+version = "0.1.0"
+edition = "2024"
+authors = ["peanutbother <peanutbother@proton.me>"]
+description = "A serde-based INI file parser for Rust"
+license = "MIT"
+repository = "https://github.com/peanutbother/serini"
+homepage = "https://github.com/peanutbother/serini"
+documentation = "https://docs.rs/serini"
+readme = "README.md"
+keywords = ["ini", "parser", "serde", "config", "serialization"]
+categories = ["config", "parser-implementations", "encoding"]
+
+[dependencies]
+serde = { version = "^1.0", features = ["derive"] }
+thiserror = "^2.0"
