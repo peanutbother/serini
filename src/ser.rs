@@ -4,6 +4,7 @@ use serde::{Serialize, ser};
 pub struct Serializer {
     output: String,
     current_section: Option<String>,
+    section_names: Vec<String>,
 }
 
 pub fn to_string<T>(value: &T) -> Result<String>
@@ -13,9 +14,274 @@ where
     let mut serializer = Serializer {
         output: String::new(),
         current_section: None,
+        section_names: Vec::new(),
     };
+
+    // First pass: collect all section names
+    let mut section_collector = SectionCollector {
+        sections: Vec::new(),
+    };
+    value.serialize(&mut section_collector)?;
+    serializer.section_names = section_collector.sections;
+
+    // Second pass: actual serialization
     value.serialize(&mut serializer)?;
     Ok(serializer.output)
+}
+
+// Helper to collect section names
+struct SectionCollector {
+    sections: Vec<String>,
+}
+
+impl ser::Serializer for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+    type SerializeSeq = Self;
+    type SerializeTuple = Self;
+    type SerializeTupleStruct = Self;
+    type SerializeTupleVariant = Self;
+    type SerializeMap = Self;
+    type SerializeStruct = Self;
+    type SerializeStructVariant = Self;
+
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        Ok(self)
+    }
+
+    // All other methods just return Ok(())
+    fn serialize_bool(self, _v: bool) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_i8(self, _v: i8) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_i16(self, _v: i16) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_i32(self, _v: i32) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_i64(self, _v: i64) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_u8(self, _v: u8) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_u16(self, _v: u16) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_u32(self, _v: u32) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_u64(self, _v: u64) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_f32(self, _v: f32) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_f64(self, _v: f64) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_char(self, _v: char) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_str(self, _v: &str) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_bytes(self, _v: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_none(self) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_some<T>(self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+    fn serialize_unit(self) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<()> {
+        Ok(())
+    }
+    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Ok(self)
+    }
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
+        Ok(self)
+    }
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        Ok(self)
+    }
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Ok(self)
+    }
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Ok(self)
+    }
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Ok(self)
+    }
+}
+
+impl ser::SerializeStruct for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        // Check if this field is a struct that will become a section
+        let mut detector = StructDetector::new();
+        let _ = value.serialize(&mut detector);
+
+        if detector.is_struct {
+            self.sections.push(key.to_string());
+        }
+
+        Ok(())
+    }
+
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+// Implement dummy traits for SectionCollector
+impl ser::SerializeSeq for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+    fn serialize_element<T>(&mut self, _value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeTuple for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+    fn serialize_element<T>(&mut self, _value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeTupleStruct for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+    fn serialize_field<T>(&mut self, _value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeTupleVariant for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+    fn serialize_field<T>(&mut self, _value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeMap for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+    fn serialize_key<T>(&mut self, _key: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn serialize_value<T>(&mut self, _value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ser::SerializeStructVariant for &mut SectionCollector {
+    type Ok = ();
+    type Error = Error;
+    fn serialize_field<T>(&mut self, _key: &'static str, _value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        Ok(())
+    }
+    fn end(self) -> Result<()> {
+        Ok(())
+    }
 }
 
 // Helper struct to detect if a value serializes as a struct
@@ -577,6 +843,7 @@ impl ser::SerializeStruct for &mut Serializer {
             let mut nested_serializer = Serializer {
                 output: String::new(),
                 current_section: Some(key.to_string()),
+                section_names: self.section_names.clone(),
             };
             value.serialize(&mut nested_serializer)?;
 
@@ -587,13 +854,17 @@ impl ser::SerializeStruct for &mut Serializer {
             let mut temp_serializer = Serializer {
                 output: String::new(),
                 current_section: self.current_section.clone(),
+                section_names: self.section_names.clone(),
             };
 
             match value.serialize(&mut temp_serializer) {
                 Ok(_) => {
                     if temp_serializer.output.is_empty() {
                         // This was None
-                        self.write_commented_key(key);
+                        // Skip commented lines for fields that are section names
+                        if !self.section_names.contains(&key.to_string()) {
+                            self.write_commented_key(key);
+                        }
                     } else {
                         // This was Some(value) or a regular value
                         self.write_key_value(key, &temp_serializer.output);

@@ -326,39 +326,50 @@ impl<'a> MapAccess<'a> {
     }
 }
 
+// Enum to track field source
+enum FieldSource {
+    Root(String),
+    Section,
+}
+
 // Root struct access - handles both root fields and sections
 struct RootStructAccess<'a> {
     de: &'a mut Deserializer,
-    root_fields: Vec<(String, String)>,
-    sections: Vec<String>,
+    fields: Vec<(String, FieldSource)>,
     index: usize,
-    in_sections: bool,
 }
 
 impl<'a> RootStructAccess<'a> {
     fn new(de: &'a mut Deserializer) -> Self {
-        let root_fields = if let Some(root_section) = de.sections.get("") {
-            root_section
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let mut fields = Vec::new();
 
-        let sections: Vec<String> = de
-            .sections
-            .keys()
-            .filter(|k| !k.is_empty())
-            .cloned()
-            .collect();
+        // Get root section fields
+        if let Some(root_section) = de.sections.get("") {
+            for (key, value) in root_section {
+                // Check if there's also a section with this name
+                if de.sections.contains_key(key) {
+                    // Prefer section over root field for self-referential structs
+                    fields.push((key.clone(), FieldSource::Section));
+                } else {
+                    fields.push((key.clone(), FieldSource::Root(value.clone())));
+                }
+            }
+        }
+
+        // Add sections that don't have corresponding root fields
+        for section_name in de.sections.keys() {
+            if !section_name.is_empty() {
+                // Check if we already added this as a field
+                if !fields.iter().any(|(name, _)| name == section_name) {
+                    fields.push((section_name.clone(), FieldSource::Section));
+                }
+            }
+        }
 
         RootStructAccess {
             de,
-            root_fields,
-            sections,
+            fields,
             index: 0,
-            in_sections: false,
         }
     }
 }
@@ -370,17 +381,8 @@ impl<'de> de::MapAccess<'de> for RootStructAccess<'_> {
     where
         K: de::DeserializeSeed<'de>,
     {
-        if !self.in_sections && self.index < self.root_fields.len() {
-            let (key, _) = &self.root_fields[self.index];
-            self.index += 1;
-            seed.deserialize(key.as_str().into_deserializer()).map(Some)
-        } else if !self.in_sections {
-            // Switch to sections
-            self.in_sections = true;
-            self.index = 0;
-            self.next_key_seed(seed)
-        } else if self.index < self.sections.len() {
-            let key = &self.sections[self.index];
+        if self.index < self.fields.len() {
+            let (key, _) = &self.fields[self.index];
             self.index += 1;
             seed.deserialize(key.as_str().into_deserializer()).map(Some)
         } else {
@@ -392,12 +394,10 @@ impl<'de> de::MapAccess<'de> for RootStructAccess<'_> {
     where
         V: de::DeserializeSeed<'de>,
     {
-        if !self.in_sections {
-            let (_, value) = &self.root_fields[self.index - 1];
-            seed.deserialize(ValueDeserializer::new(value))
-        } else {
-            let section = &self.sections[self.index - 1];
-            seed.deserialize(&mut SectionDeserializer::new(self.de, section))
+        let (key, source) = &self.fields[self.index - 1];
+        match source {
+            FieldSource::Root(value) => seed.deserialize(ValueDeserializer::new(value)),
+            FieldSource::Section => seed.deserialize(&mut SectionDeserializer::new(self.de, key)),
         }
     }
 }
@@ -484,10 +484,18 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut SectionDeserializer<'a> {
         visitor.visit_map(StructAccess::new(self.de, &self.section))
     }
 
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        // Section exists, so it's Some
+        visitor.visit_some(self)
+    }
+
     // Forward all other deserialize methods to deserialize_any
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map enum identifier ignored_any
     }
 }

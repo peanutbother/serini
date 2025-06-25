@@ -410,106 +410,180 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    struct Config {
-        name: String,
-        port: u16,
-        enabled: bool,
-        description: Option<String>,
-        database: Database,
-        cache: Cache,
+    mod nested {
+        use super::*;
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            name: String,
+            port: u16,
+            enabled: bool,
+            description: Option<String>,
+            database: Database,
+            cache: Cache,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Database {
+            host: String,
+            port: u16,
+            username: String,
+            password: Option<String>,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Cache {
+            ttl: i32,
+            max_size: Option<u64>,
+        }
+
+        #[test]
+        fn test_serialize() {
+            let config = Config {
+                name: "My App".to_string(),
+                port: 8080,
+                enabled: true,
+                description: Some("A test application".to_string()),
+                database: Database {
+                    host: "localhost".to_string(),
+                    port: 5432,
+                    username: "admin".to_string(),
+                    password: None,
+                },
+                cache: Cache {
+                    ttl: 300,
+                    max_size: Some(1000000),
+                },
+            };
+
+            let ini_str = to_string(&config).unwrap();
+            println!("{}", ini_str);
+
+            // Root level fields
+            assert!(ini_str.contains("name = My App"));
+            assert!(ini_str.contains("port = 8080"));
+            assert!(ini_str.contains("enabled = true"));
+            assert!(ini_str.contains("description = A test application"));
+
+            // Database section
+            assert!(ini_str.contains("[database]"));
+            assert!(ini_str.contains("host = localhost"));
+            assert!(ini_str.contains("; password ="));
+
+            // Cache section
+            assert!(ini_str.contains("[cache]"));
+            assert!(ini_str.contains("ttl = 300"));
+            assert!(ini_str.contains("max_size = 1000000"));
+
+            // Verify proper structure
+            let lines: Vec<&str> = ini_str.lines().collect();
+            let db_idx = lines.iter().position(|&l| l == "[database]").unwrap();
+            let cache_idx = lines.iter().position(|&l| l == "[cache]").unwrap();
+            assert!(db_idx > 0); // Database section comes after root fields
+            assert!(cache_idx > db_idx); // Cache section comes after database
+        }
+
+        #[test]
+        fn test_deserialize_nested() {
+            let ini_str = r#"
+    name = My App
+    port = 8080
+    enabled = true
+    description = A test application
+    
+    [database]
+    host = localhost
+    port = 5432
+    username = admin
+    
+    [cache]
+    ttl = 300
+    max_size = 1000000
+    "#;
+
+            let config: Config = from_str(ini_str).unwrap();
+
+            assert_eq!(config.name, "My App");
+            assert_eq!(config.port, 8080);
+            assert_eq!(config.enabled, true);
+            assert_eq!(config.description, Some("A test application".to_string()));
+            assert_eq!(config.database.host, "localhost");
+            assert_eq!(config.database.port, 5432);
+            assert_eq!(config.database.username, "admin");
+            assert_eq!(config.database.password, None);
+            assert_eq!(config.cache.ttl, 300);
+            assert_eq!(config.cache.max_size, Some(1000000));
+        }
     }
 
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    struct Database {
-        host: String,
-        port: u16,
-        username: String,
-        password: Option<String>,
-    }
+    mod boxed {
+        use super::*;
 
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    struct Cache {
-        ttl: i32,
-        max_size: Option<u64>,
-    }
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            speed: f32,
+            anime: Option<Box<Config>>,
+            movie: Option<Box<Config>>,
+        }
 
-    #[test]
-    fn test_serialize() {
-        let config = Config {
-            name: "My App".to_string(),
-            port: 8080,
-            enabled: true,
-            description: Some("A test application".to_string()),
-            database: Database {
-                host: "localhost".to_string(),
-                port: 5432,
-                username: "admin".to_string(),
-                password: None,
-            },
-            cache: Cache {
-                ttl: 300,
-                max_size: Some(1000000),
-            },
-        };
+        #[test]
+        fn test_serialize_boxed() {
+            let config = Config {
+                speed: 1.0,
+                anime: Some(Box::new(Config {
+                    speed: 1.5,
+                    anime: None,
+                    movie: None,
+                })),
+                movie: Some(Box::new(Config {
+                    speed: 2.0,
+                    anime: None,
+                    movie: None,
+                })),
+            };
 
-        let ini_str = to_string(&config).unwrap();
-        println!("{}", ini_str);
+            let ini_str = to_string(&config).unwrap();
+            println!("{}", ini_str);
 
-        // Root level fields
-        assert!(ini_str.contains("name = My App"));
-        assert!(ini_str.contains("port = 8080"));
-        assert!(ini_str.contains("enabled = true"));
-        assert!(ini_str.contains("description = A test application"));
+            // Root level fields
+            assert!(ini_str.contains("speed = 1"));
+            assert!(ini_str.contains("[anime]"));
+            assert!(ini_str.contains("[movie]"));
 
-        // Database section
-        assert!(ini_str.contains("[database]"));
-        assert!(ini_str.contains("host = localhost"));
-        assert!(ini_str.contains("; password ="));
+            // Verify proper structure
+            let lines: Vec<&str> = ini_str.lines().collect();
+            let anime_idx = lines.iter().position(|&l| l == "[anime]").unwrap();
+            let movie_idx = lines.iter().position(|&l| l == "[movie]").unwrap();
+            assert!(anime_idx > 0); // anime section comes after root fields
+            assert!(movie_idx > anime_idx); // movie section comes after anime
+            assert_eq!("speed = 1.5", lines[anime_idx + 1]);
+            assert_eq!("speed = 2", lines[movie_idx + 1]);
+        }
 
-        // Cache section
-        assert!(ini_str.contains("[cache]"));
-        assert!(ini_str.contains("ttl = 300"));
-        assert!(ini_str.contains("max_size = 1000000"));
+        #[test]
+        fn test_deserialize_boxed() {
+            let ini_str = r#"
+    speed = 1
+    
+    [anime]
+    speed = 1.5
+    
+    [movie]
+    speed = 2
+    "#;
 
-        // Verify proper structure
-        let lines: Vec<&str> = ini_str.lines().collect();
-        let db_idx = lines.iter().position(|&l| l == "[database]").unwrap();
-        let cache_idx = lines.iter().position(|&l| l == "[cache]").unwrap();
-        assert!(db_idx > 0); // Database section comes after root fields
-        assert!(cache_idx > db_idx); // Cache section comes after database
-    }
+            let config: Config = from_str(ini_str).unwrap();
+            let anime = config.anime.unwrap();
+            let movie = config.movie.unwrap();
 
-    #[test]
-    fn test_deserialize() {
-        let ini_str = r#"
-name = My App
-port = 8080
-enabled = true
-description = A test application
-
-[database]
-host = localhost
-port = 5432
-username = admin
-
-[cache]
-ttl = 300
-max_size = 1000000
-"#;
-
-        let config: Config = from_str(ini_str).unwrap();
-
-        assert_eq!(config.name, "My App");
-        assert_eq!(config.port, 8080);
-        assert_eq!(config.enabled, true);
-        assert_eq!(config.description, Some("A test application".to_string()));
-        assert_eq!(config.database.host, "localhost");
-        assert_eq!(config.database.port, 5432);
-        assert_eq!(config.database.username, "admin");
-        assert_eq!(config.database.password, None);
-        assert_eq!(config.cache.ttl, 300);
-        assert_eq!(config.cache.max_size, Some(1000000));
+            assert_eq!(config.speed, 1.0);
+            assert_eq!(anime.speed, 1.5);
+            assert_eq!(movie.speed, 2.0);
+            assert!(anime.anime.is_none());
+            assert!(anime.movie.is_none());
+            assert!(movie.anime.is_none());
+            assert!(movie.movie.is_none());
+        }
     }
 
     #[test]
