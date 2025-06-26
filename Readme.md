@@ -141,6 +141,75 @@ url = postgres://localhost/mydb
 pool_size = 10
 ```
 
+### Self-Referential Structs
+
+serini supports self-referential structs using `Option<Box<T>>`, allowing sections to override values from the root configuration:
+
+```rust
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    speed: f32,
+    movie: Option<Box<Config>>,
+    anime: Option<Box<Config>>,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse from INI
+    let ini_str = r#"
+speed = 1
+
+[anime]
+speed = 1.5
+
+[movie]
+speed = 2
+"#;
+
+    let config: Config = from_str(ini_str)?;
+    
+    println!("Default speed: {}", config.speed);
+    if let Some(anime_config) = &config.anime {
+        println!("Anime speed: {}", anime_config.speed);
+    }
+    if let Some(movie_config) = &config.movie {
+        println!("Movie speed: {}", movie_config.speed);
+    }
+
+    // Serialize to INI
+    let new_config = Config {
+        speed: 1.0,
+        anime: Some(Box::new(Config {
+            speed: 1.5,
+            anime: None,
+            movie: None,
+        })),
+        movie: Some(Box::new(Config {
+            speed: 2.0,
+            anime: None,
+            movie: None,
+        })),
+    };
+
+    let ini_output = to_string(&new_config)?;
+    println!("{}", ini_output);
+    Ok(())
+}
+```
+
+Output:
+
+```ini
+speed = 1
+
+[anime]
+speed = 1.5
+
+[movie]
+speed = 2
+```
+
+This pattern is useful for configuration files where different profiles or modes can override default settings.
+
 ### Field Renaming
 
 Use serde's rename attribute:
