@@ -18,7 +18,7 @@ Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-serini = "0.1"
+serini = "0.2"
 ```
 
 ## Quick Example
