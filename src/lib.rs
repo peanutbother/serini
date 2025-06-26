@@ -31,6 +31,8 @@
 //! struct Config {
 //!     name: String,
 //!     port: u16,
+//!     #[serde(skip_serializing_if = "Option::is_none")]
+//!     debug: Option<usize>,
 //!     database: Database,
 //! }
 //!
@@ -46,6 +48,7 @@
 //!     let config = Config {
 //!         name: "My Application".to_string(),
 //!         port: 8080,
+//!         debug: None,
 //!         database: Database {
 //!             host: "localhost".to_string(),
 //!             port: 5432,
@@ -481,6 +484,31 @@ mod tests {
             let cache_idx = lines.iter().position(|&l| l == "[cache]").unwrap();
             assert!(db_idx > 0); // Database section comes after root fields
             assert!(cache_idx > db_idx); // Cache section comes after database
+        }
+
+        #[test]
+        fn test_serialize_skip_none() {
+            #[derive(Debug, Serialize)]
+            struct Config {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                is_hidden: Option<bool>,
+                is_none: Option<bool>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                is_some: Option<bool>,
+            }
+
+            let config = Config {
+                is_hidden: None,
+                is_none: None,
+                is_some: Some(true),
+            };
+
+            let ini = to_string(&config).unwrap();
+            let mut lines = ini.lines();
+
+            assert_eq!(lines.next(), Some("; is_none = "));
+            assert_eq!(lines.next(), Some("is_some = true"));
+            assert!(lines.next().is_none());
         }
 
         #[test]

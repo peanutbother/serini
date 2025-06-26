@@ -7,7 +7,7 @@ A serde-based INI file parser for Rust that supports automatic serialization and
 - 🚀 **Automatic serialization** - Convert Rust structs to INI format
 - 🔧 **Type-safe deserialization** - Parse INI files into strongly-typed Rust structs
 - 📁 **Section support** - Nested structs become INI sections automatically
-- 💭 **Option handling** - `None` values are serialized as commented lines
+- 💭 **Option handling** - `None` values are serialized as commented lines if serialization is not skipped using `#[serde(skip)]` or similiar
 - 🛡️ **Escape sequences** - Properly handles special characters in values
 - 🏷️ **Serde integration** - Supports serde attributes like `#[serde(rename = "...")]`
 
@@ -31,6 +31,8 @@ use serini::{from_str, to_string};
 struct Config {
     name: String,
     port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug: Option<usize>,
     database: Database,
 }
 
@@ -45,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config {
         name: "My App".to_string(),
         port: 8080,
+        debug: None,
         database: Database {
             host: "localhost".to_string(),
             username: "admin".to_string(),
@@ -58,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Deserialize from INI
     let parsed: Config = from_str(&ini_string)?;
+    assert_eq!(config, parsed);
     Ok(())
 }
 ```
