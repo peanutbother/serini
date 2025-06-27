@@ -141,6 +141,8 @@ jobs:
     needs: [test, publish]
     if: failure()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Notify failure
         run: |
