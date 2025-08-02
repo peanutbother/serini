@@ -634,4 +634,40 @@ mod tests {
         let deserialized: EscapeTest = from_str(&ini_str).unwrap();
         assert_eq!(test, deserialized);
     }
+
+    #[test]
+    fn roundtrip_backslashes() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct RoundtripTest {
+            bs_bs: String,
+            bs_n: String,
+            bs_r: String,
+            bs_t: String,
+            bs_dquot: String,
+            bs_semi: String,
+            bs_octo: String,
+        }
+
+        let bs_bs = r#"\\"#;
+        let bs_n = r#"\n"#;
+        let bs_r = r#"\r"#;
+        let bs_t = r#"\t"#;
+        let bs_dquot = r#"\""#;
+        let bs_semi = r#"\;"#;
+        let bs_octo = r#"\#"#;
+
+        let test = RoundtripTest {
+            bs_bs: bs_bs.into(),
+            bs_n: bs_n.into(),
+            bs_r: bs_r.into(),
+            bs_t: bs_t.into(),
+            bs_dquot: bs_dquot.into(),
+            bs_semi: bs_semi.into(),
+            bs_octo: bs_octo.into(),
+        };
+
+        let ini_str = to_string(&test).unwrap();
+        let deserialized: RoundtripTest = from_str(&ini_str).unwrap();
+        assert_eq!(test, deserialized)
+    }
 }

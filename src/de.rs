@@ -43,7 +43,7 @@ impl Deserializer {
             // Key-value pair
             if let Some(eq_pos) = line.find('=') {
                 let key = line[..eq_pos].trim().to_string();
-                let value = Self::unescape_value(line[eq_pos + 1..].trim());
+                let value = Self::unescape_value(line[eq_pos + 1..].trim())?;
 
                 if let Some(section) = sections.get_mut(&current_section) {
                     section.insert(key, value);
@@ -54,15 +54,36 @@ impl Deserializer {
         Ok(Deserializer { sections })
     }
 
-    fn unescape_value(value: &str) -> String {
-        value
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n")
-            .replace("\\r", "\r")
-            .replace("\\t", "\t")
-            .replace("\\\"", "\"")
-            .replace("\\;", ";")
-            .replace("\\#", "#")
+    fn unescape_value(value: &str) -> Result<String> {
+        let mut unescaped = String::with_capacity(value.len());
+        let mut iter = value.chars();
+        while let Some(c) = iter.next() {
+            match c {
+                '\\' => match iter
+                    .next()
+                    .ok_or(Error::Unescape("Backslash without escape".to_string()))?
+                {
+                    '0' => unescaped.push('\0'),
+                    'a' => unescaped.push('\x07'),
+                    'b' => unescaped.push('\x08'),
+                    't' => unescaped.push('\t'),
+                    'r' => unescaped.push('\r'),
+                    'n' => unescaped.push('\n'),
+                    'x' => {
+                        let s: String = iter.by_ref().take(4).collect();
+                        let codepoint = u32::from_str_radix(&s, 16)
+                            .map_err(|e| Error::Unescape(e.to_string()))?;
+                        let char = char::from_u32(codepoint).ok_or_else(|| {
+                            Error::Unescape(format!("{s:?} is not a valid unicode codepoint"))
+                        })?;
+                        unescaped.push(char);
+                    }
+                    escapee => unescaped.push(escapee),
+                },
+                c => unescaped.push(c),
+            }
+        }
+        Ok(unescaped)
     }
 }
 
@@ -800,5 +821,27 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer {
         V: de::Visitor<'de>,
     {
         visitor.visit_unit()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unescape_value() {
+        for (escaped, should_unescaped) in [
+            (r#"\\\\"#, r#"\\"#),
+            (r#"\\n"#, r#"\n"#),
+            (r#"\\r"#, r#"\r"#),
+            (r#"\\t"#, r#"\t"#),
+            (r#"\\\""#, r#"\""#),
+            (r#"\\\;"#, r#"\;"#),
+            (r#"\\\#"#, r#"\#"#),
+        ] {
+            assert_eq!(
+                should_unescaped.to_string(),
+                Deserializer::unescape_value(escaped).unwrap()
+            );
+        }
     }
 }
