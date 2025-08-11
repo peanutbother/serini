@@ -22,6 +22,9 @@ pub enum Error {
     #[error("missing field: {0}")]
     MissingField(String),
 
+    #[error("error while unescaping: {0}")]
+    Unescape(String),
+
     #[error("custom error: {0}")]
     Custom(String),
 }
