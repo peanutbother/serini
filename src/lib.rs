@@ -657,13 +657,13 @@ mod tests {
         let bs_octo = r#"\#"#;
 
         let test = RoundtripTest {
-            bs_bs: bs_bs.into(),
-            bs_n: bs_n.into(),
-            bs_r: bs_r.into(),
-            bs_t: bs_t.into(),
-            bs_dquot: bs_dquot.into(),
-            bs_semi: bs_semi.into(),
-            bs_octo: bs_octo.into(),
+            bs_bs: bs_bs.to_string(),
+            bs_n: bs_n.to_string(),
+            bs_r: bs_r.to_string(),
+            bs_t: bs_t.to_string(),
+            bs_dquot: bs_dquot.to_string(),
+            bs_semi: bs_semi.to_string(),
+            bs_octo: bs_octo.to_string(),
         };
 
         let ini_str = to_string(&test).unwrap();
