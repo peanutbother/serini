@@ -406,7 +406,7 @@ pub mod ser;
 
 pub use de::from_str;
 pub use error::Error;
-pub use ser::to_string;
+pub use ser::{to_string, to_string_with_config};
 
 #[cfg(test)]
 mod tests {
@@ -508,6 +508,37 @@ mod tests {
 
             assert_eq!(lines.next(), Some("; is_none = "));
             assert_eq!(lines.next(), Some("is_some = true"));
+            assert!(lines.next().is_none());
+        }
+
+        #[test]
+        fn test_serialize_no_comments() {
+            #[derive(Debug, Serialize)]
+            struct Config {
+                street_name: Option<String>,
+                house_number: Option<u16>,
+                zip_code: Option<u16>,
+                city: Option<String>,
+            }
+
+            let config = Config {
+                street_name: Some("Fakestreet".to_string()),
+                house_number: Some(123),
+                zip_code: None,
+                city: None,
+            };
+
+            let ini = to_string_with_config(
+                &config,
+                ser::Config {
+                    none_as_comment: false,
+                },
+            )
+            .unwrap();
+            let mut lines = ini.lines();
+
+            assert_eq!(lines.next(), Some("street_name = Fakestreet"));
+            assert_eq!(lines.next(), Some("house_number = 123"));
             assert!(lines.next().is_none());
         }
 
