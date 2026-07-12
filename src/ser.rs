@@ -4,16 +4,36 @@ use serde_core::{Serialize, ser};
 pub struct Serializer {
     output: String,
     current_section: Option<String>,
+    struct_name: Option<String>,
+    sequence_prefix: Option<String>,
+    sequence_index: usize,
+    numbered_sequences: bool,
     section_names: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SerializeOptions {
+    pub numbered_sequences: bool,
 }
 
 pub fn to_string<T>(value: &T) -> Result<String>
 where
     T: Serialize,
 {
+    to_string_with_options(value, SerializeOptions::default())
+}
+
+pub fn to_string_with_options<T>(value: &T, options: SerializeOptions) -> Result<String>
+where
+    T: Serialize,
+{
     let mut serializer = Serializer {
         output: String::new(),
         current_section: None,
+        struct_name: None,
+        sequence_prefix: None,
+        sequence_index: 0,
+        numbered_sequences: options.numbered_sequences,
         section_names: Vec::new(),
     };
 
@@ -178,10 +198,10 @@ impl ser::SerializeStruct for &mut SectionCollector {
         T: ?Sized + Serialize,
     {
         // Check if this field is a struct that will become a section
-        let mut detector = StructDetector::new();
+        let mut detector = ContainerDetector::new();
         let _ = value.serialize(&mut detector);
 
-        if detector.is_struct {
+        if detector.kind == Some(ContainerKind::Struct) {
             self.sections.push(key.to_string());
         }
 
@@ -284,18 +304,30 @@ impl ser::SerializeStructVariant for &mut SectionCollector {
     }
 }
 
-// Helper struct to detect if a value serializes as a struct
-struct StructDetector {
-    is_struct: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContainerKind {
+    Struct,
+    Seq,
 }
 
-impl StructDetector {
+// Helper struct to detect whether a value serializes as a struct or sequence
+struct ContainerDetector {
+    kind: Option<ContainerKind>,
+}
+
+impl ContainerDetector {
     fn new() -> Self {
-        StructDetector { is_struct: false }
+        ContainerDetector { kind: None }
+    }
+
+    fn set_kind(&mut self, kind: ContainerKind) {
+        if self.kind.is_none() {
+            self.kind = Some(kind);
+        }
     }
 }
 
-impl ser::Serializer for &mut StructDetector {
+impl ser::Serializer for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     type SerializeSeq = Self;
@@ -307,7 +339,7 @@ impl ser::Serializer for &mut StructDetector {
     type SerializeStructVariant = Self;
 
     fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
-        self.is_struct = true;
+        self.set_kind(ContainerKind::Struct);
         Ok(self)
     }
 
@@ -396,6 +428,7 @@ impl ser::Serializer for &mut StructDetector {
         Ok(())
     }
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        self.set_kind(ContainerKind::Seq);
         Ok(self)
     }
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
@@ -431,7 +464,7 @@ impl ser::Serializer for &mut StructDetector {
     }
 }
 
-impl ser::SerializeSeq for &mut StructDetector {
+impl ser::SerializeSeq for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     fn serialize_element<T>(&mut self, _value: &T) -> Result<()>
@@ -445,7 +478,7 @@ impl ser::SerializeSeq for &mut StructDetector {
     }
 }
 
-impl ser::SerializeTuple for &mut StructDetector {
+impl ser::SerializeTuple for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     fn serialize_element<T>(&mut self, _value: &T) -> Result<()>
@@ -459,7 +492,7 @@ impl ser::SerializeTuple for &mut StructDetector {
     }
 }
 
-impl ser::SerializeTupleStruct for &mut StructDetector {
+impl ser::SerializeTupleStruct for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     fn serialize_field<T>(&mut self, _value: &T) -> Result<()>
@@ -473,7 +506,7 @@ impl ser::SerializeTupleStruct for &mut StructDetector {
     }
 }
 
-impl ser::SerializeTupleVariant for &mut StructDetector {
+impl ser::SerializeTupleVariant for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     fn serialize_field<T>(&mut self, _value: &T) -> Result<()>
@@ -487,7 +520,7 @@ impl ser::SerializeTupleVariant for &mut StructDetector {
     }
 }
 
-impl ser::SerializeMap for &mut StructDetector {
+impl ser::SerializeMap for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     fn serialize_key<T>(&mut self, _key: &T) -> Result<()>
@@ -507,7 +540,7 @@ impl ser::SerializeMap for &mut StructDetector {
     }
 }
 
-impl ser::SerializeStruct for &mut StructDetector {
+impl ser::SerializeStruct for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     fn serialize_field<T>(&mut self, _key: &'static str, _value: &T) -> Result<()>
@@ -521,7 +554,7 @@ impl ser::SerializeStruct for &mut StructDetector {
     }
 }
 
-impl ser::SerializeStructVariant for &mut StructDetector {
+impl ser::SerializeStructVariant for &mut ContainerDetector {
     type Ok = ();
     type Error = Error;
     fn serialize_field<T>(&mut self, _key: &'static str, _value: &T) -> Result<()>
@@ -558,6 +591,15 @@ impl Serializer {
         self.output.push_str("; ");
         self.output.push_str(key);
         self.output.push_str(" = \n");
+    }
+
+    fn write_section_header(&mut self, name: &str) {
+        if !self.output.is_empty() && !self.output.ends_with('\n') {
+            self.output.push('\n');
+        }
+        self.output.push('[');
+        self.output.push_str(name);
+        self.output.push_str("]\n");
     }
 }
 
@@ -683,7 +725,8 @@ impl ser::Serializer for &mut Serializer {
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
-        Err(Error::UnsupportedFeature("sequences".to_string()))
+        self.sequence_index = 0;
+        Ok(self)
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
@@ -712,7 +755,8 @@ impl ser::Serializer for &mut Serializer {
         Ok(self)
     }
 
-    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+    fn serialize_struct(self, name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        self.struct_name = Some(name.to_string());
         // Don't create section headers here - they're created in serialize_field
         if self.current_section.is_none() {
             self.current_section = Some("".to_string());
@@ -735,11 +779,55 @@ impl ser::SerializeSeq for &mut Serializer {
     type Ok = ();
     type Error = Error;
 
-    fn serialize_element<T>(&mut self, _value: &T) -> Result<()>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        Err(Error::UnsupportedFeature("sequences".to_string()))
+        let mut detector = ContainerDetector::new();
+        let _ = value.serialize(&mut detector);
+
+        let mut element_serializer = Serializer {
+            output: String::new(),
+            current_section: None,
+            struct_name: None,
+            sequence_prefix: None,
+            sequence_index: 0,
+            numbered_sequences: self.numbered_sequences,
+            section_names: self.section_names.clone(),
+        };
+        value.serialize(&mut element_serializer)?;
+
+        let base_name = element_serializer
+            .struct_name
+            .clone()
+            .or_else(|| self.sequence_prefix.clone())
+            .unwrap_or_else(|| "item".to_string());
+        let section_name = if self.numbered_sequences {
+            format!("{}.{}", base_name, self.sequence_index)
+        } else {
+            base_name
+        };
+        self.sequence_index += 1;
+
+        match detector.kind {
+            Some(ContainerKind::Struct) => {
+                self.write_section_header(&section_name);
+                self.output.push_str(&element_serializer.output);
+            }
+            Some(ContainerKind::Seq) => {
+                return Err(Error::UnsupportedFeature("nested sequences".to_string()));
+            }
+            None => {
+                self.write_section_header(&section_name);
+                if element_serializer.output.is_empty() {
+                    // Empty elements become empty sections.
+                } else {
+                    self.write_key_value("value", &element_serializer.output);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn end(self) -> Result<()> {
@@ -826,34 +914,50 @@ impl ser::SerializeStruct for &mut Serializer {
     where
         T: ?Sized + Serialize,
     {
-        // First, detect if the value is a struct
-        let mut detector = StructDetector::new();
+        // First, detect if the value is a struct or sequence
+        let mut detector = ContainerDetector::new();
         let _ = value.serialize(&mut detector);
 
-        if detector.is_struct {
+        if detector.kind == Some(ContainerKind::Struct) {
             // This is a nested struct - serialize it as a section
-            if !self.output.is_empty() && !self.output.ends_with('\n') {
-                self.output.push('\n');
-            }
-            self.output.push('[');
-            self.output.push_str(key);
-            self.output.push_str("]\n");
+            self.write_section_header(key);
 
             // Serialize the struct's fields
             let mut nested_serializer = Serializer {
                 output: String::new(),
                 current_section: Some(key.to_string()),
+                struct_name: None,
+                sequence_prefix: None,
+                sequence_index: 0,
+                numbered_sequences: self.numbered_sequences,
                 section_names: self.section_names.clone(),
             };
             value.serialize(&mut nested_serializer)?;
 
             // Add the fields (the nested serializer won't have section headers)
             self.output.push_str(&nested_serializer.output);
+        } else if detector.kind == Some(ContainerKind::Seq) {
+            // This is a sequence - serialize each element as its own section
+            let mut nested_serializer = Serializer {
+                output: String::new(),
+                current_section: self.current_section.clone(),
+                struct_name: None,
+                sequence_prefix: Some(key.to_string()),
+                sequence_index: 0,
+                numbered_sequences: self.numbered_sequences,
+                section_names: self.section_names.clone(),
+            };
+            value.serialize(&mut nested_serializer)?;
+            self.output.push_str(&nested_serializer.output);
         } else {
             // Regular value or Option
             let mut temp_serializer = Serializer {
                 output: String::new(),
                 current_section: self.current_section.clone(),
+                struct_name: None,
+                sequence_prefix: None,
+                sequence_index: 0,
+                numbered_sequences: self.numbered_sequences,
                 section_names: self.section_names.clone(),
             };
 

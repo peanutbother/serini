@@ -9,6 +9,7 @@
 //! - **Option handling** - [`None`][Option] values are serialized as commented lines
 //! - **Escape sequences** - Properly handles special characters in values
 //! - **Section support** - Nested structs are automatically converted to INI sections
+//! - **Sequence support** - Sequence elements are written as repeated sections, with optional numbering
 //! - **Type safety** - Leverages serde's type system for safe conversions
 //!
 //! ## Quick Start
@@ -238,18 +239,19 @@
 //! - **String**: `String`, `&str`
 //! - **Option**: `Option<T>` where `T` is a supported type
 //! - **Structs**: Custom structs with named fields
+//! - **Sequences**: Each element is serialized as its own INI section
 //!
 //! ## Limitations
 //!
 //! The following serde types are **not** supported:
 //!
-//! - Sequences (Vec, arrays, etc.)
+//! - Deserializing sequences (Vec, arrays, etc.)
 //! - Tuples and tuple structs
 //! - Enums with variants
 //! - Maps (HashMap, BTreeMap, etc.)
 //! - Unit structs
 //!
-//! Attempting to serialize or deserialize these types will result in an error.
+//! Attempting to deserialize these types will result in an error.
 //!
 //! ## Error Handling
 //!
@@ -406,7 +408,7 @@ pub mod ser;
 
 pub use de::from_str;
 pub use error::Error;
-pub use ser::to_string;
+pub use ser::{SerializeOptions, to_string, to_string_with_options};
 
 #[cfg(test)]
 mod tests {
@@ -611,6 +613,119 @@ mod tests {
             assert!(anime.movie.is_none());
             assert!(movie.anime.is_none());
             assert!(movie.movie.is_none());
+        }
+    }
+
+    mod sequences {
+        use super::*;
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Service {
+            host: String,
+            port: u16,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            services: Vec<Service>,
+            tags: Vec<String>,
+        }
+
+        #[test]
+        fn test_serialize_sequences_as_sections() {
+            let config = Config {
+                services: vec![
+                    Service {
+                        host: "localhost".to_string(),
+                        port: 8080,
+                    },
+                    Service {
+                        host: "example.com".to_string(),
+                        port: 443,
+                    },
+                ],
+                tags: vec!["alpha".to_string(), "beta".to_string()],
+            };
+
+            let ini = to_string(&config).unwrap();
+
+            println!("{}", ini);
+
+            assert!(ini.contains("[Service]"));
+            assert!(ini.contains("host = localhost"));
+            assert!(ini.contains("port = 8080"));
+            assert!(ini.contains("[Service]"));
+            assert!(ini.contains("host = example.com"));
+            assert!(ini.contains("port = 443"));
+
+            assert!(ini.contains("[tags]"));
+            assert!(ini.contains("value = alpha"));
+            assert!(ini.contains("[tags]"));
+            assert!(ini.contains("value = beta"));
+
+            let lines: Vec<&str> = ini.lines().collect();
+            let service_sections: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|&(_, l)| *l == "[Service]")
+                .map(|(i, _)| i)
+                .collect();
+            let tag_sections: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|&(_, l)| *l == "[tags]")
+                .map(|(i, _)| i)
+                .collect();
+
+            assert_eq!(service_sections.len(), 2);
+            assert_eq!(tag_sections.len(), 2);
+            assert!(service_sections[0] < service_sections[1]);
+            assert!(service_sections[1] < tag_sections[0]);
+            assert!(tag_sections[0] < tag_sections[1]);
+        }
+
+        #[test]
+        fn test_serialize_sequences_with_numbering() {
+            let config = Config {
+                services: vec![Service {
+                    host: "localhost".to_string(),
+                    port: 8080,
+                }],
+                tags: vec!["alpha".to_string()],
+            };
+
+            let ini = to_string_with_options(
+                &config,
+                SerializeOptions {
+                    numbered_sequences: true,
+                },
+            )
+            .unwrap();
+
+            assert!(ini.contains("[Service.0]"));
+            assert!(ini.contains("[tags.0]"));
+        }
+
+        #[test]
+        fn test_roundtrip_sequences() {
+            let config = Config {
+                services: vec![
+                    Service {
+                        host: "localhost".to_string(),
+                        port: 8080,
+                    },
+                    Service {
+                        host: "example.com".to_string(),
+                        port: 443,
+                    },
+                ],
+                tags: vec!["alpha".to_string(), "beta".to_string()],
+            };
+
+            let ini = to_string(&config).unwrap();
+            let parsed: Config = from_str(&ini).unwrap();
+
+            assert_eq!(config, parsed);
         }
     }
 
