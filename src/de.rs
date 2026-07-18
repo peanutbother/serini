@@ -1,5 +1,5 @@
 use crate::{Error, error::Result};
-use serde::{
+use serde_core::{
     Deserialize,
     de::{self, IntoDeserializer},
 };
@@ -514,7 +514,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut SectionDeserializer<'a> {
     }
 
     // Forward all other deserialize methods to deserialize_any
-    serde::forward_to_deserialize_any! {
+    serde_core::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
         bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map enum identifier ignored_any

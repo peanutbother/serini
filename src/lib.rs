@@ -533,7 +533,7 @@ mod tests {
 
             assert_eq!(config.name, "My App");
             assert_eq!(config.port, 8080);
-            assert_eq!(config.enabled, true);
+            assert!(config.enabled);
             assert_eq!(config.description, Some("A test application".to_string()));
             assert_eq!(config.database.host, "localhost");
             assert_eq!(config.database.port, 5432);

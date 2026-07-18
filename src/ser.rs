@@ -1,5 +1,5 @@
 use crate::{Error, error::Result};
-use serde::{Serialize, ser};
+use serde_core::{Serialize, ser};
 
 pub struct Serializer {
     output: String,

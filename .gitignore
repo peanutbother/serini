@@ -1,5 +1,6 @@
 # Added by cargo
 /target
+Cargo.lock
 
 
 # MacOS specific files

@@ -1,4 +1,4 @@
-use serde::{de, ser};
+use serde_core::{de, ser};
 use std::fmt;
 use thiserror::Error;
 
