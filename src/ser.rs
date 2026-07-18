@@ -1,32 +1,58 @@
 use crate::{Error, error::Result};
 use serde_core::{Serialize, ser};
 
+#[derive(Default)]
 pub struct Serializer {
     output: String,
     current_section: Option<String>,
     section_names: Vec<String>,
+    config: Config,
 }
 
-pub fn to_string<T>(value: &T) -> Result<String>
-where
-    T: Serialize,
-{
-    let mut serializer = Serializer {
-        output: String::new(),
-        current_section: None,
-        section_names: Vec::new(),
-    };
+impl Serializer {
+    fn with_config(config: Config) -> Self {
+        Self {
+            config,
+            ..Default::default()
+        }
+    }
 
-    // First pass: collect all section names
-    let mut section_collector = SectionCollector {
-        sections: Vec::new(),
-    };
-    value.serialize(&mut section_collector)?;
-    serializer.section_names = section_collector.sections;
+    fn serialize<T: Serialize>(mut self, value: &T) -> Result<String> {
+        // First pass: collect all section names
+        let mut section_collector = SectionCollector {
+            sections: Vec::new(),
+        };
+        value.serialize(&mut section_collector)?;
+        self.section_names = section_collector.sections;
 
-    // Second pass: actual serialization
-    value.serialize(&mut serializer)?;
-    Ok(serializer.output)
+        // Second pass: actual serialization
+        value.serialize(&mut self)?;
+        Ok(self.output)
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct Config {
+    /// Serialize `None` values serialized as commented lines
+    pub none_as_comment: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            none_as_comment: true,
+        }
+    }
+}
+
+pub fn to_string<T: Serialize>(value: &T) -> Result<String> {
+    let serializer = Serializer::default();
+    serializer.serialize(value)
+}
+
+pub fn to_string_with_config<T: Serialize>(value: &T, config: Config) -> Result<String> {
+    let serializer = Serializer::with_config(config);
+    serializer.serialize(value)
 }
 
 // Helper to collect section names
@@ -844,6 +870,7 @@ impl ser::SerializeStruct for &mut Serializer {
                 output: String::new(),
                 current_section: Some(key.to_string()),
                 section_names: self.section_names.clone(),
+                config: self.config,
             };
             value.serialize(&mut nested_serializer)?;
 
@@ -855,14 +882,18 @@ impl ser::SerializeStruct for &mut Serializer {
                 output: String::new(),
                 current_section: self.current_section.clone(),
                 section_names: self.section_names.clone(),
+                config: self.config,
             };
 
             match value.serialize(&mut temp_serializer) {
                 Ok(_) => {
                     if temp_serializer.output.is_empty() {
                         // This was None
-                        // Skip commented lines for fields that are section names
-                        if !self.section_names.contains(&key.to_string()) {
+                        // Write out a commented line if configured to do so,
+                        // and the field is not a section name
+                        if self.config.none_as_comment
+                            && !self.section_names.contains(&key.to_string())
+                        {
                             self.write_commented_key(key);
                         }
                     } else {
