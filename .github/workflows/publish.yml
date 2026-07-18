@@ -124,7 +124,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           echo "Publishing to crates.io..."
-          cargo publish --all-features --token $CARGO_REGISTRY_TOKEN
+          cargo publish --all-features
           echo "Successfully published to crates.io! 🎉"
 
       - name: Create GitHub Release Notes
