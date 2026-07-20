@@ -245,13 +245,13 @@
 //!
 //! The following serde types are **not** supported:
 //!
-//! - Deserializing sequences (Vec, arrays, etc.)
+//! - Nested sequences (Vec, arrays, etc.)
 //! - Tuples and tuple structs
 //! - Enums with variants
 //! - Maps (HashMap, BTreeMap, etc.)
 //! - Unit structs
 //!
-//! Attempting to deserialize these types will result in an error.
+//! Attempting to serialize or deserialize these types will result in an error.
 //!
 //! ## Error Handling
 //!
