@@ -6,8 +6,14 @@ use serde_core::{
 use std::collections::HashMap;
 use std::str::FromStr;
 
+#[derive(Debug, Clone)]
+struct Section {
+    name: String,
+    fields: HashMap<String, String>,
+}
+
 pub struct Deserializer {
-    sections: HashMap<String, HashMap<String, String>>,
+    sections: Vec<Section>,
 }
 
 pub fn from_str<'a, T>(s: &'a str) -> Result<T>
@@ -21,9 +27,11 @@ where
 
 impl Deserializer {
     fn from_str(input: &str) -> Result<Self> {
-        let mut sections = HashMap::new();
-        let mut current_section = String::new();
-        sections.insert(current_section.clone(), HashMap::new());
+        let mut sections = vec![Section {
+            name: String::new(),
+            fields: HashMap::new(),
+        }];
+        let mut current_section = 0usize;
 
         for line in input.lines() {
             let line = line.trim();
@@ -35,8 +43,11 @@ impl Deserializer {
 
             // Section header
             if line.starts_with('[') && line.ends_with(']') {
-                current_section = line[1..line.len() - 1].to_string();
-                sections.insert(current_section.clone(), HashMap::new());
+                sections.push(Section {
+                    name: line[1..line.len() - 1].to_string(),
+                    fields: HashMap::new(),
+                });
+                current_section = sections.len() - 1;
                 continue;
             }
 
@@ -45,13 +56,98 @@ impl Deserializer {
                 let key = line[..eq_pos].trim().to_string();
                 let value = Self::unescape_value(line[eq_pos + 1..].trim())?;
 
-                if let Some(section) = sections.get_mut(&current_section) {
-                    section.insert(key, value);
-                }
+                sections[current_section].fields.insert(key, value);
             }
         }
 
         Ok(Deserializer { sections })
+    }
+
+    fn section_base_name(name: &str) -> &str {
+        if let Some((base, suffix)) = name.rsplit_once('.')
+            && !suffix.is_empty()
+            && suffix.chars().all(|c| c.is_ascii_digit())
+        {
+            return base;
+        }
+
+        name
+    }
+
+    fn pascal_case(name: &str) -> String {
+        name.split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => {
+                        let mut result = first.to_uppercase().to_string();
+                        result.push_str(chars.as_str());
+                        result
+                    }
+                    None => String::new(),
+                }
+            })
+            .collect()
+    }
+
+    fn singular_candidates(name: &str) -> Vec<String> {
+        let mut candidates = vec![name.to_string()];
+
+        let singular = if let Some(base) = name.strip_suffix("ies") {
+            format!("{base}y")
+        } else if let Some(base) = name.strip_suffix("ses") {
+            base.to_string()
+        } else if let Some(base) = name.strip_suffix('s') {
+            base.to_string()
+        } else {
+            String::new()
+        };
+
+        if !singular.is_empty() && singular != name {
+            candidates.push(singular.clone());
+            let pascal = Self::pascal_case(&singular);
+            if pascal != singular {
+                candidates.push(pascal);
+            }
+        }
+
+        let pascal = Self::pascal_case(name);
+        if pascal != name {
+            candidates.push(pascal);
+        }
+
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    }
+
+    fn section_indices_matching(&self, name: &str) -> Vec<usize> {
+        let candidates = Self::singular_candidates(name);
+        self.sections
+            .iter()
+            .enumerate()
+            .filter_map(|(index, section)| {
+                let base = Self::section_base_name(&section.name);
+                candidates
+                    .iter()
+                    .any(|candidate| candidate == base)
+                    .then_some(index)
+            })
+            .collect()
+    }
+
+    fn section_index(&self, name: &str) -> Option<usize> {
+        self.sections
+            .iter()
+            .enumerate()
+            .find_map(|(index, section)| {
+                (Self::section_base_name(&section.name) == name).then_some(index)
+            })
+    }
+
+    fn section(&self, index: usize) -> &Section {
+        &self.sections[index]
     }
 
     fn unescape_value(value: &str) -> Result<String> {
@@ -237,11 +333,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer {
         visitor.visit_newtype_struct(self)
     }
 
-    fn deserialize_seq<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        Err(Error::UnsupportedFeature("sequences".to_string()))
+        visitor.visit_seq(SequenceDeserializer::new(
+            self,
+            (1..self.sections.len()).collect(),
+        ))
     }
 
     fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value>
@@ -273,33 +372,18 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer {
     fn deserialize_struct<V>(
         self,
         name: &'static str,
-        _fields: &'static [&'static str],
+        fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        // For root struct or when the struct name exists as a section
-        if name.is_empty() || self.sections.contains_key(name) {
-            if name.is_empty() {
-                // Root struct - deserialize the whole INI file
-                visitor.visit_map(RootStructAccess::new(self))
-            } else {
-                // Named section exists
-                visitor.visit_map(StructAccess::new(self, name))
-            }
+        if name.is_empty() {
+            visitor.visit_map(RootStructAccess::new(self, fields))
+        } else if let Some(index) = self.section_index(name) {
+            visitor.visit_map(StructAccess::new(self, index))
         } else {
-            // Check if any section exists (for renamed structs)
-            // This handles cases where the struct might be renamed via serde
-            if self.sections.len() > 1
-                || (self.sections.len() == 1 && !self.sections.contains_key(""))
-            {
-                // We have sections, assume root struct
-                visitor.visit_map(RootStructAccess::new(self))
-            } else {
-                // No sections or only root section
-                visitor.visit_map(StructAccess::new(self, ""))
-            }
+            visitor.visit_map(RootStructAccess::new(self, fields))
         }
     }
 
@@ -332,13 +416,13 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer {
 
 struct MapAccess<'a> {
     de: &'a mut Deserializer,
-    sections: Vec<String>,
+    sections: Vec<usize>,
     index: usize,
 }
 
 impl<'a> MapAccess<'a> {
     fn new(de: &'a mut Deserializer) -> Self {
-        let sections: Vec<String> = de.sections.keys().cloned().collect();
+        let sections: Vec<usize> = (0..de.sections.len()).collect();
         MapAccess {
             de,
             sections,
@@ -350,7 +434,8 @@ impl<'a> MapAccess<'a> {
 // Enum to track field source
 enum FieldSource {
     Root(String),
-    Section,
+    Section(usize),
+    Sequence(Vec<usize>),
 }
 
 // Root struct access - handles both root fields and sections
@@ -361,29 +446,36 @@ struct RootStructAccess<'a> {
 }
 
 impl<'a> RootStructAccess<'a> {
-    fn new(de: &'a mut Deserializer) -> Self {
+    fn new(de: &'a mut Deserializer, expected_fields: &'static [&'static str]) -> Self {
         let mut fields = Vec::new();
+        let root_section = de.section(0);
 
-        // Get root section fields
-        if let Some(root_section) = de.sections.get("") {
-            for (key, value) in root_section {
-                // Check if there's also a section with this name
-                if de.sections.contains_key(key) {
-                    // Prefer section over root field for self-referential structs
-                    fields.push((key.clone(), FieldSource::Section));
+        for &field_name in expected_fields {
+            let matching_sections = de.section_indices_matching(field_name);
+            if matching_sections.len() > 1 {
+                fields.push((
+                    field_name.to_string(),
+                    FieldSource::Sequence(matching_sections),
+                ));
+            } else if matching_sections.len() == 1 {
+                let index = matching_sections[0];
+                let section = de.section(index);
+                if section.fields.len() == 1 && section.fields.contains_key("value") {
+                    fields.push((field_name.to_string(), FieldSource::Sequence(vec![index])));
                 } else {
-                    fields.push((key.clone(), FieldSource::Root(value.clone())));
+                    let section_name = section.name.as_str();
+                    let singular = Deserializer::singular_candidates(field_name);
+                    if singular.iter().any(|candidate| {
+                        candidate != field_name
+                            && Deserializer::section_base_name(section_name) == candidate
+                    }) {
+                        fields.push((field_name.to_string(), FieldSource::Sequence(vec![index])));
+                    } else {
+                        fields.push((field_name.to_string(), FieldSource::Section(index)));
+                    }
                 }
-            }
-        }
-
-        // Add sections that don't have corresponding root fields
-        for section_name in de.sections.keys() {
-            if !section_name.is_empty() {
-                // Check if we already added this as a field
-                if !fields.iter().any(|(name, _)| name == section_name) {
-                    fields.push((section_name.clone(), FieldSource::Section));
-                }
+            } else if let Some(value) = root_section.fields.get(field_name) {
+                fields.push((field_name.to_string(), FieldSource::Root(value.clone())));
             }
         }
 
@@ -415,10 +507,15 @@ impl<'de> de::MapAccess<'de> for RootStructAccess<'_> {
     where
         V: de::DeserializeSeed<'de>,
     {
-        let (key, source) = &self.fields[self.index - 1];
+        let (_, source) = &self.fields[self.index - 1];
         match source {
             FieldSource::Root(value) => seed.deserialize(ValueDeserializer::new(value)),
-            FieldSource::Section => seed.deserialize(&mut SectionDeserializer::new(self.de, key)),
+            FieldSource::Section(index) => {
+                seed.deserialize(&mut SectionDeserializer::new(self.de, *index))
+            }
+            FieldSource::Sequence(indices) => seed.deserialize(
+                &mut SequenceValueDeserializer::new(self.de, indices.clone()),
+            ),
         }
     }
 }
@@ -431,7 +528,7 @@ impl<'de> de::MapAccess<'de> for MapAccess<'_> {
         K: de::DeserializeSeed<'de>,
     {
         if self.index < self.sections.len() {
-            let key = &self.sections[self.index];
+            let key = self.de.section(self.sections[self.index]).name.clone();
             self.index += 1;
             seed.deserialize(key.as_str().into_deserializer()).map(Some)
         } else {
@@ -443,7 +540,7 @@ impl<'de> de::MapAccess<'de> for MapAccess<'_> {
     where
         V: de::DeserializeSeed<'de>,
     {
-        let section = &self.sections[self.index - 1];
+        let section = self.sections[self.index - 1];
         seed.deserialize(&mut SectionDeserializer::new(self.de, section))
     }
 }
@@ -454,32 +551,109 @@ struct StructAccess {
 }
 
 impl StructAccess {
-    fn new(de: &mut Deserializer, section: &str) -> Self {
-        let fields = if let Some(section_map) = de.sections.get(section) {
-            section_map
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        } else {
-            Vec::new()
-        };
+    fn new(de: &mut Deserializer, section_index: usize) -> Self {
+        let fields = de
+            .section(section_index)
+            .fields
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         StructAccess { fields, index: 0 }
     }
 }
 
-// Section deserializer for nested structs
+struct SequenceDeserializer<'a> {
+    de: &'a mut Deserializer,
+    sections: Vec<usize>,
+    index: usize,
+}
+
+impl<'a> SequenceDeserializer<'a> {
+    fn new(de: &'a mut Deserializer, sections: Vec<usize>) -> Self {
+        SequenceDeserializer {
+            de,
+            sections,
+            index: 0,
+        }
+    }
+}
+
+impl<'de, 'a> de::SeqAccess<'de> for SequenceDeserializer<'a> {
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        if self.index < self.sections.len() {
+            let section = self.sections[self.index];
+            self.index += 1;
+            seed.deserialize(&mut SectionDeserializer::new(self.de, section))
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+struct SequenceValueDeserializer<'a> {
+    inner: SequenceDeserializer<'a>,
+}
+
+impl<'a> SequenceValueDeserializer<'a> {
+    fn new(de: &'a mut Deserializer, sections: Vec<usize>) -> Self {
+        SequenceValueDeserializer {
+            inner: SequenceDeserializer::new(de, sections),
+        }
+    }
+}
+
+impl<'de, 'a> de::Deserializer<'de> for &'a mut SequenceValueDeserializer<'a> {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_seq(&mut self.inner)
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_some(self)
+    }
+
+    serde_core::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
+        bytes byte_buf unit unit_struct newtype_struct tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+// Section deserializer for nested structs and sequence elements
 struct SectionDeserializer<'a> {
     de: &'a mut Deserializer,
-    section: String,
+    section: usize,
 }
 
 impl<'a> SectionDeserializer<'a> {
-    fn new(de: &'a mut Deserializer, section: &str) -> Self {
-        SectionDeserializer {
-            de,
-            section: section.to_string(),
-        }
+    fn new(de: &'a mut Deserializer, section: usize) -> Self {
+        SectionDeserializer { de, section }
+    }
+
+    fn primitive_value(&self) -> Option<&str> {
+        let section = self.de.section(self.section);
+        section.fields.get("value").map(|value| value.as_str())
     }
 }
 
@@ -490,7 +664,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut SectionDeserializer<'a> {
     where
         V: de::Visitor<'de>,
     {
-        self.deserialize_struct("", &[], visitor)
+        if let Some(value) = self.primitive_value() {
+            visitor.visit_string(value.to_string())
+        } else {
+            self.deserialize_struct("", &[], visitor)
+        }
     }
 
     fn deserialize_struct<V>(
@@ -502,7 +680,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut SectionDeserializer<'a> {
     where
         V: de::Visitor<'de>,
     {
-        visitor.visit_map(StructAccess::new(self.de, &self.section))
+        visitor.visit_map(StructAccess::new(self.de, self.section))
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -513,11 +691,285 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut SectionDeserializer<'a> {
         visitor.visit_some(self)
     }
 
-    // Forward all other deserialize methods to deserialize_any
-    serde_core::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
-        bytes byte_buf unit unit_struct newtype_struct seq tuple
-        tuple_struct map enum identifier ignored_any
+    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_bool(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "booleans in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_i8(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_i16(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_i32(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_i64(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_u8(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_u16(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_u32(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_u64(visitor)
+        } else {
+            Err(Error::UnsupportedFeature(
+                "integers in sections".to_string(),
+            ))
+        }
+    }
+
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_f32(visitor)
+        } else {
+            Err(Error::UnsupportedFeature("floats in sections".to_string()))
+        }
+    }
+
+    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_f64(visitor)
+        } else {
+            Err(Error::UnsupportedFeature("floats in sections".to_string()))
+        }
+    }
+
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            ValueDeserializer::new(value).deserialize_char(visitor)
+        } else {
+            Err(Error::UnsupportedFeature("chars in sections".to_string()))
+        }
+    }
+
+    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            visitor.visit_string(value.to_string())
+        } else {
+            Err(Error::UnsupportedFeature("strings in sections".to_string()))
+        }
+    }
+
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            visitor.visit_string(value.to_string())
+        } else {
+            Err(Error::UnsupportedFeature("strings in sections".to_string()))
+        }
+    }
+
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            visitor.visit_bytes(value.as_bytes())
+        } else {
+            Err(Error::UnsupportedFeature("bytes in sections".to_string()))
+        }
+    }
+
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if let Some(value) = self.primitive_value() {
+            visitor.visit_byte_buf(value.as_bytes().to_vec())
+        } else {
+            Err(Error::UnsupportedFeature("bytes in sections".to_string()))
+        }
+    }
+
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        let _ = visitor;
+        Err(Error::UnsupportedFeature("nested sequences".to_string()))
+    }
+
+    fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        Err(Error::UnsupportedFeature("tuples".to_string()))
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        _name: &'static str,
+        _len: usize,
+        _visitor: V,
+    ) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        Err(Error::UnsupportedFeature("tuple structs".to_string()))
+    }
+
+    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        if self.primitive_value().is_some() {
+            Err(Error::UnsupportedFeature(
+                "maps in primitive sections".to_string(),
+            ))
+        } else {
+            visitor.visit_map(StructAccess::new(self.de, self.section))
+        }
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        Err(Error::UnsupportedFeature("enums".to_string()))
+    }
+
+    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        self.deserialize_str(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_unit()
     }
 }
 
